@@ -1,127 +1,182 @@
-#include <Arduino.h>
+/*
+   Azure IoT Device Provisioning Service registration tool
+   This sketch securely connects to an Azure IoT DPS using MQTT over WiFi,
+   secured by SSl.
+   It uses a private key stored in the built-in crypto chip and a CA signed
+   public certificate for SSL/TLS authetication.
+   It subscribes to a DPS topic to receive the response, and publishes a message
+   to stard the device enrollment.
+   Boards:
+   - Arduino Nano 33 IoT
+   Author: Nicola Elia
+   GNU General Public License v3.0
+*/
 
-// C99 libraries
-#include <string.h>
-#include <stdbool.h>
-#include <time.h>
-#include <cstdlib>
-
-// Libraries for MQTT client, WiFi connection and SAS-token generation.
-#include <WiFiNINA.h>
-#include <ArduinoMqttClient.h>
 #include <ArduinoBearSSL.h>
+#include <ArduinoECCX08.h>
+#include <utility/ECCX08SelfSignedCert.h>
+#include <ArduinoMqttClient.h>
+#include <WiFiNINA.h>
 
-// Additional sample headers 
 #include "secrets.h"
 
-// Utility macros and defines
-#define LED_PIN 2
+// ================================== SETTINGS ===================================
+// Set self_signed_cert to true for using the crypto chip stored certificate
+// Set self_signed_cert to false to use an hardcoded certificate
+bool self_signed_cert = false;
+const int keySlot     = 0;  // Crypto chip slot to pick the key from
+const int certSlot    = 8;  // Crypto chip slot to pick the certificate from
+// ===============================================================================
 
-// Translate iot_configs.h defines into variables used by the sample
-static const char* ssid = SECRET_WIFI_SSID;
-static const char* password = SECRET_WIFI_PASS;
-static const char* broker = SECRET_BROKER;
-static const String device_id = SECRET_DEVICE_ID;
+const char* ssid       = SECRET_WIFI_SSID;
+const char* pass       = SECRET_WIFI_PASS;
+const char* DPS_broker = SECRET_DPS_BROKER;
+const String idScope   = SECRET_ID_SCOPE;
+const String device_id = SECRET_DEVICE_ID;
 
+WiFiClient    wifiClient;            // Used for the TCP socket connection
+BearSSLClient sslClient(wifiClient); // Used for SSL/TLS connection, integrates with ECCX08
+MqttClient    mqttClient(sslClient); // Used for MQTT protocol usage
 
-// Memory allocated for the sample's variables and structures.
-static WiFiClient wifi_client; // Used for the TCP socket connection
-static BearSSLClient ssl_client(wifi_client); // Used for SSL/TLS connection, integrates with ECC508
-static MqttClient mqtt_client(ssl_client);
+unsigned long lastMillis = 0;
 
-// Auxiliary functions
-unsigned long getTime() {
-  // get the current time from the WiFi module-
-  return WiFi.getTime();
-}
-  
-static void connectToWiFi() {
-  Serial.print("Connecting to WIFI SSID ");
-  Serial.println(ssid);
+void setup() {
+  // Wait for serial
+  Serial.begin(9600);
+  while (!Serial);
 
-  while (WiFi.begin(ssid, password) != WL_CONNECTED) {
-    Serial.print(".");
-    delay(500);
+  // Check the crypto chip module presence (needed for BearSSL)
+  if (!ECCX08.begin()) {
+    Serial.println("No ECCX08 present!");
+    while (1);
   }
 
-  Serial.println();
-  Serial.print("WiFi connected, IP address: ");
-  Serial.println(WiFi.localIP());
-}
-
-/*
- * Establishses connection with the MQTT Broker (IoT Hub)
- * Some errors you may receive:
- * -- (-.2) Either a connectivity error or an error in the url of the broker
- * -- (-.5) Check credentials - has the SAS Token expired? Do you have the right connection string copied into arduino_secrets?
- */
-static void connectToMQTT() {
-  Serial.print("Attempting to MQTT broker: ");
-  Serial.print(broker);
-  Serial.println(" ");
-
-  br_x509_certificate x509cert = {
-    CLIENT_CERT,
-    sizeof(CLIENT_CERT) - 1
-  };
-  
-  // Set the X509 certificate
-  ssl_client.setEccCert(x509cert);
-
+  // ================ SSL SETUP ================
   // Set a callback to get the current time
-  // used to validate the servers certificate
+  // (used to validate the servers certificate)
   ArduinoBearSSL.onGetTime(getTime);
 
-  // Set the username to "<broker>/<device id>/?api-version=2018-06-30"
+  if (self_signed_cert) {
+    Serial.println("Loading the self-signed certificate from ECCX08...");
+    // Reconstruct the self signed cert
+    ECCX08SelfSignedCert.beginReconstruction(keySlot, certSlot);
+    // In case of self-signed certificate with ECCX08SelfSignedCert.ino, the ECCX08
+    // crypto chip serial number is used as CN by default. Otherwise, change it here.
+    ECCX08SelfSignedCert.setCommonName(ECCX08.serialNumber());
+    ECCX08SelfSignedCert.endReconstruction();
+
+    // Instruct the SSL client to use the chosen ECCX08 slot for picking the private key
+    // and set the reconstructed certificate as accompanying public certificate.
+    sslClient.setEccSlot(
+      keySlot,
+      ECCX08SelfSignedCert.bytes(),
+      ECCX08SelfSignedCert.length()
+    );
+  } else if (!self_signed_cert) {
+    Serial.println("Using the certificate from secrets.h...");
+
+    // Instruct the SSL client to use the chosen ECCX08 slot for picking the private key
+    // and set the hardcoded certificate as accompanying public certificate.
+    sslClient.setEccSlot(
+      keySlot,
+      CLIENT_CERT);
+  }
+
+  /*
+     Note: I prefer to use BearSSLClient::setEccSlot because it contains a function to decode
+     the .pem certificate (the hardcoded certificate can be stored in base64, instead of
+     converting it to binary), and it automatically computes the certificate length.
+  */
+
+  // ================ MQTT Client SETUP ================
+  // Set the client id used for MQTT as the device_id
+  mqttClient.setId(device_id);
+
+  // Set the username to "<idScope>/registrations/<registrationId>/api-version=2019-03-31"
+  // String username = broker + "/registrations/" + device_id + "/api-version=2019-03-31";
   String username;
-
-  // Set the client id used for MQTT as the device id
-  mqtt_client.setId(device_id);
-
-  username += broker;
-  username += "/";
+  username += idScope;
+  username += "/registrations/";
   username += device_id;
-  username += "/api-version=2020-09-30";
-  // this sketch - Arduino-IoT-Hub-Temperature.azure-devices.net/temperature-sensor-1/api-version=2020-09-30
-  // symmetric key sketch - Arduino-IoT-Hub-Temperature.azure-devices.net/temp-sensor-1/?api-version=2020-09-30&DeviceClientType=c%2F1.3.2(ard;esp8266)
-  Serial.print("Username: ");
-  Serial.println(username);
-  mqtt_client.setUsernamePassword(username, "");
+  username += "/api-version=2019-03-31";
 
-  while (!mqtt_client.connect(broker, 8883)) {
+  // Set an empty password (because of X.509 authentication instead of SAS token)
+  String password = "";
+
+  // Authenticate the MQTT Client
+  mqttClient.setUsernamePassword(username, password);
+
+  // Set the on message callback, called when the MQTT Client receives a message
+  mqttClient.onMessage(onMessageReceived);
+}
+
+void loop() {
+  // ================ LOOP FUNCTION ================
+  // Select the MQTT topic to subscribe to. It is a default value for DPS.
+  String sub_topic = "$dps/registrations/res/#";
+  // String sub_topic = "devices/" + device_id + "/messages/devicebound/#";
+
+  // Connect to WiFi
+  if (WiFi.status() != WL_CONNECTED) {
+    connectWiFi();
+  }
+
+  // Establish MQTT connection
+  if (!mqttClient.connected()) {
+    connectMQTT(sub_topic);
+  }
+}
+
+unsigned long getTime() {
+  // Get the current time from the WiFi module
+  return WiFi.getTime();
+}
+
+void connectWiFi() {
+  Serial.print("Attempting to connect to SSID: ");
+  Serial.print(ssid);
+  Serial.print(" ");
+
+  while (WiFi.begin(ssid, pass) != WL_CONNECTED) {
     // failed, retry
     Serial.print(".");
-    // Serial.println(mqtt_client.connectError());
-    delay(500);
+    delay(5000);
+  }
+  Serial.println();
+
+  Serial.println("You're connected to the network");
+  Serial.println();
+}
+
+void connectMQTT(String topic) {
+  Serial.print("Attempting to connect to MQTT broker: ");
+  Serial.print(DPS_broker);
+  Serial.println(" ");
+
+  while (!mqttClient.connect(DPS_broker, 8883)) {
+    delay(5000);
+    // Failed, retry
+    Serial.print("connectError: ");
+    Serial.println(mqttClient.connectError());
   }
   Serial.println();
 
   Serial.println("You're connected to the MQTT broker");
   Serial.println();
-  
-  // subscribe to a topic
-  mqtt_client.subscribe("devices/" + device_id + "/messages/devicebound/#");
+
+  // Subscribe to the given topic
+  mqttClient.subscribe(topic);
 }
 
-static void establishConnection() {
-  if(WiFi.status() != WL_CONNECTED) {
-    // if WiFi is disconnected => connect
-    connectToWiFi();
+void onMessageReceived(int messageSize) {
+  // Message received, print the topic and the message
+  Serial.print("Received a message with topic '");
+  Serial.print(mqttClient.messageTopic());
+  Serial.print("'");
+
+  // Use the stream interface to print the message contents
+  while (mqttClient.available()) {
+    Serial.print((char)mqttClient.read());
   }
-
-  if (!mqtt_client.connected()) {
-    // if MQTT client is disconnected => connect
-    connectToMQTT();
-  }
-}
-
-// Arduino setup and loop main functions.
-void setup() {
-  Serial.begin(115200);
-
-  establishConnection();
-}
-
-void loop() {
-  establishConnection();
+  Serial.println();
 }
