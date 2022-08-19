@@ -127,3 +127,13 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Arduino
+iot_configs.h
+secrets.h
+
+# Certificates
+*.cer
+*.der
+*.pfx
+*.pem
