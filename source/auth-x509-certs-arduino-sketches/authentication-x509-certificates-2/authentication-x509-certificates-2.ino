@@ -1,14 +1,16 @@
 /*
-   Azure IoT Device Provisioning Service registration tool
-   This sketch securely connects to an Azure IoT DPS using MQTT over WiFi,
-   secured by SSl.
+   Azure IoT Device in the Azure IoT Hub
+   This sketch securely connects to an device in the Azure IoT Hub using MQTT
+   over WiFi, secured by SSl.
    It uses a private key stored in the built-in crypto chip and a CA signed
    public certificate for SSL/TLS authetication.
-   It subscribes to a DPS topic to receive the response, and publishes a message
+   It subscribes to a IoT Hub topic to receive the response, and publishes a message
    to stard the device enrollment.
+   Additionally, there is a timer for the execution time of the successful authenticaiton
+   and it is printed on the serial console.
    Boards:
-   - Arduino Nano 33 IoT
-   Author: Nicola Elia
+   - Arduino MKR 1010 WiFi
+   Author: Vitomir Pavlov
    GNU General Public License v3.0
 */
 
@@ -22,7 +24,7 @@
 
 #include "secrets.h"
 
-// ================================== SETTINGS ===================================
+// ================================== Settings ===================================
 // Set self_signed_cert to true for using the crypto chip stored certificate
 // Set self_signed_cert to false to use an hardcoded certificate
 bool self_signed_cert = false;
@@ -34,14 +36,70 @@ const char* ssid       = SECRET_WIFI_SSID;
 const char* pass       = SECRET_WIFI_PASS;
 const char* broker     = SECRET_BROKER;
 const char* DPS_broker = SECRET_DPS_BROKER;
-const String idScope   = SECRET_ID_SCOPE;
+const String id_scope  = SECRET_ID_SCOPE;
 const String device_id = SECRET_DEVICE_ID;
 
-WiFiClient    wifiClient;            // Used for the TCP socket connection
-BearSSLClient sslClient(wifiClient); // Used for SSL/TLS connection, integrates with ECCX08
-MqttClient    mqttClient(sslClient); // Used for MQTT protocol usage
+WiFiClient    wifi_client;            // Used for the TCP socket connection
+BearSSLClient ssl_client(wifi_client); // Used for SSL/TLS connection, integrates with ECCX08
+MqttClient    mqtt_client(ssl_client); // Used for MQTT protocol usage
 
-unsigned long lastMillis = 0;
+// ================================== Auxiliary functions ===================================
+unsigned long getTime() {
+  // Get the current time from the WiFi module
+  return WiFi.getTime();
+}
+
+void connectWiFi() {
+  Serial.print("Attempting to connect to SSID: ");
+  Serial.print(ssid);
+  Serial.print(" ");
+
+  while (WiFi.begin(ssid, pass) != WL_CONNECTED) {
+    // failed, retry
+    Serial.print(".");
+    delay(5000);
+  }
+  Serial.println();
+
+  Serial.println("You're connected to the network");
+  Serial.println();
+}
+
+void connectMQTT(String topic) {
+  Serial.print("Attempting to connect to MQTT broker: ");
+  Serial.print(broker);
+  Serial.println(" ");
+
+  long int start_time = millis();
+  while (!mqtt_client.connect(broker, 8883)) {
+    delay(5000);
+    // Failed, retry
+    Serial.print("connectError: ");
+    Serial.println(mqtt_client.connectError());
+    start_time = millis();
+  }
+  long int end_time = millis();
+  Serial.print("Execution time for the connection: "); Serial.print(end_time - start_time); Serial.println(" milliseconds");
+
+  Serial.println("You're connected to the MQTT broker");
+  Serial.println();
+
+  // Subscribe to the given topic
+  mqtt_client.subscribe(topic);
+}
+
+void onMessageReceived(int message_size) {
+  // Message received, print the topic and the message
+  Serial.print("Received a message with topic '");
+  Serial.print(mqtt_client.messageTopic());
+  Serial.print("'");
+
+  // Use the stream interface to print the message contents
+  while (mqtt_client.available()) {
+    Serial.print((char)mqtt_client.read());
+  }
+  Serial.println();
+}
 
 void setup() {
   // Wait for serial
@@ -70,7 +128,7 @@ void setup() {
 
     // Instruct the SSL client to use the chosen ECCX08 slot for picking the private key
     // and set the reconstructed certificate as accompanying public certificate.
-    sslClient.setEccSlot(
+    ssl_client.setEccSlot(
       keySlot,
       ECCX08SelfSignedCert.bytes(),
       ECCX08SelfSignedCert.length()
@@ -80,19 +138,19 @@ void setup() {
 
     // Instruct the SSL client to use the chosen ECCX08 slot for picking the private key
     // and set the hardcoded certificate as accompanying public certificate.
-    sslClient.setEccSlot(
-      keySlot,
-      CLIENT_PUBLIC_CERT);
-    
+    // ssl_client.setEccSlot(
+    //  keySlot,
+    //  CLIENT_PUBLIC_CERT);
+
     // br_x509_certificate x509cert = {
     //  CLIENT_CERT,
     //  sizeof(CLIENT_CERT) - 1
     // };
 
     // Set the X509 certificate
-    // sslClient.setEccCert(x509cert);
+    // ssl_client.setEccCert(x509cert);
 
-    // sslClient.setKey(CLIENT_KEY, CLIENT_CERT);
+    // ssl_client.setKey(CLIENT_KEY, CLIENT_CERT);
   }
 
   /*
@@ -103,9 +161,9 @@ void setup() {
 
   // ================ MQTT Client SETUP ================
   // Set the client id used for MQTT as the device_id
-  mqttClient.setId(device_id);
+  mqtt_client.setId(device_id);
 
-  // Set the username to "<idScope>/registrations/<registrationId>/api-version=2019-03-31"
+  // Set the username to "<id_scope>/registrations/<registrationId>/api-version=2019-03-31"
   // String username = broker + "/registrations/" + device_id + "/api-version=2019-03-31";
   String username;
   username += broker;
@@ -114,13 +172,13 @@ void setup() {
   username += "/?api-version=2018-06-30";
 
   // Set an empty password if you want to use X.509 authentication, otherwise set the SAS token connection string
-  String password = "";
+  String password = SECRET_CONN_STRING;
 
   // Authenticate the MQTT Client
-  mqttClient.setUsernamePassword(username, password);
+  mqtt_client.setUsernamePassword(username, password);
 
   // Set the on message callback, called when the MQTT Client receives a message
-  mqttClient.onMessage(onMessageReceived);
+  mqtt_client.onMessage(onMessageReceived);
 }
 
 void publishMessage() {
@@ -131,7 +189,6 @@ void publishMessage() {
   /*  
   Here is where you should write the body of your message. In this example, the JSON doc is purposely longer than 256 characters, to highlight the issue.
   */
-
   StaticJsonDocument<capacity> doc;
   doc["topic"] = "messageTopic";  
   doc["deviceId"] = device_id;
@@ -173,22 +230,23 @@ void publishMessage() {
   //   Serial.println(" ");
     
   char payload[1024]; // length of the char buffer that contains the JSON file, concretely the number of characters included in one message
-  size_t payloadSize = serializeJson(doc, payload);
+  size_t payload_size = serializeJson(doc, payload);
   
   //   DEBUG - write the size of the serialized document
   //   Serial.print("json size:");
-  //   Serial.println(payloadSize);
+  //   Serial.println(payload_size);
     
   // send message, the Print interface can be used to set the message contents
-  mqttClient.beginMessage("devices/" + device_id + "/messages/events/", static_cast<unsigned long>(payloadSize));
-  mqttClient.print(payload);
-  mqttClient.endMessage();
-  /*  
+  mqtt_client.beginMessage("devices/" + device_id + "/messages/events/", static_cast<unsigned long>(payload_size));
+  mqtt_client.print(payload);
+  mqtt_client.endMessage();
+  
+  /*
   To replicate the issue, uncomment the following 3 lines and comment the 3 above. This way you'll only be able to send MQTT messages smaller than 256 Bytes.
   */
-  //  mqttClient.beginMessage("devices/" + device_id + "/messages/events/");
-  //  serializeJson(doc, mqttClient);
-  //  mqttClient.endMessage();
+  //  mqtt_client.beginMessage("devices/" + device_id + "/messages/events/");
+  //  serializeJson(doc, mqtt_client);
+  //  mqtt_clientnt.endMessage();
 }
 
 void loop() {
@@ -203,71 +261,14 @@ void loop() {
   }
 
   // Establish MQTT connection
-  if (!mqttClient.connected()) {
+  if (!mqtt_client.connected()) {
     connectMQTT(sub_topic);
   }
 
   // poll for new MQTT messages and send keep alives
-  // mqttClient.poll();
+  // mqtt_client.poll();
 
   // publishMessage();
 
   // delay(10000); //  publish a message roughly every 10 seconds
-}
-
-unsigned long getTime() {
-  // Get the current time from the WiFi module
-  return WiFi.getTime();
-}
-
-void connectWiFi() {
-  Serial.print("Attempting to connect to SSID: ");
-  Serial.print(ssid);
-  Serial.print(" ");
-
-  while (WiFi.begin(ssid, pass) != WL_CONNECTED) {
-    // failed, retry
-    Serial.print(".");
-    delay(5000);
-  }
-  Serial.println();
-
-  Serial.println("You're connected to the network");
-  Serial.println();
-}
-
-void connectMQTT(String topic) {
-  Serial.print("Attempting to connect to MQTT broker: ");
-  Serial.print(broker);
-  Serial.println(" ");
-
-  long int start_time = millis();
-  while (!mqttClient.connect(broker, 8883)) {
-    delay(5000);
-    // Failed, retry
-    Serial.print("connectError: ");
-    Serial.println(mqttClient.connectError());
-    start_time = millis();
-  }
-  long int end_time = millis();
-  Serial.print("Execution time for the connection: "); Serial.print(end_time-start_time); Serial.println(" milliseconds");
-
-  Serial.println("You're connected to the MQTT broker");
-  Serial.println();
-
-  // Subscribe to the given topic
-  mqttClient.subscribe(topic);
-}
-
-void onMessageReceived(int messageSize) {
-  // Message received, print the topic and the message
-  Serial.print("Received a message with topic '");
-  Serial.print(mqttClient.messageTopic());
-  Serial.print("'");
-
-  // Use the stream interface to print the message contents
-  while (mqttClient.available()) {
-    Serial.print((char)mqttClient.read());
-  }
-  Serial.println();
 }
