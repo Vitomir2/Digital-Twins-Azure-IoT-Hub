@@ -6,7 +6,7 @@
 #define IOT_CONFIG_WIFI_PASSWORD ""
 
 // Azure IoT
-#define IOT_CONFIG_IOTHUB_FQDN "<Azure-IoT-Hub-Name.azure-devices.net"
+#define IOT_CONFIG_IOTHUB_FQDN "<Azure-IoT-Hub-Name>.azure-devices.net"
 #define IOT_CONFIG_DEVICE_ID "<device twin ID>"
 #define IOT_CONFIG_DEVICE_KEY "<connection for the IoT Hub device twin>"
 
