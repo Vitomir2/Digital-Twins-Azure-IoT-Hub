@@ -35,8 +35,8 @@ async def create_client(cert_file, key_file, pass_phrase, device_id):
     )
     
     # Instantiate client. This will throw an error if the certificate data is incorrect
-    print("Send the public data of the {0} certificate to the CA and the IoT Hub.".format(device_id))
-    print("The Azure CA and the IoT Hub client will very the device's certificate and, if everything is correct, it will instantiate the client.")
+    print("Send the public data of the {0} certificate to the Azure CA and the IoT Hub.".format(device_id))
+    print("The CA and the Hub client will verify the device's certificate and, if everything is correct, it will instantiate the client.")
     device_client = IoTHubDeviceClient.create_from_x509_certificate(
         hostname=hostname, device_id=device_id, x509=x509
     )
