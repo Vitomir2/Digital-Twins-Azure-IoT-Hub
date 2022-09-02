@@ -129,8 +129,7 @@ dmypy.json
 .pyre/
 
 # Arduino
-iot_configs.h
-secrets.h
+*prod.h
 
 # Certificates
 *.cer

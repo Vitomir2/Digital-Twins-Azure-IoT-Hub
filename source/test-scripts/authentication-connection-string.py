@@ -29,18 +29,15 @@ def main():
             continue
 
 if __name__ == '__main__':
-    # Use the following loop logic if want to get average runtime for 10 rounds
-	# rounds = 10
+    # rounds = 10
     # total_seconds = 0
     # for i in range(rounds):
-    #    start_time = time.time()
-    #    main()
-    #    execution_time = time.time() - start_time
-    #    total_seconds += execution_time
+        # start_time = time.time()
+        # main()
+        # execution_time = time.time() - start_time
+        # total_seconds += execution_time
         
     # print("done")
     # print("Average execution time is: " + str(total_seconds / rounds))
-	
-	# Comment this part if using the loop above
     main()
     print("done")
