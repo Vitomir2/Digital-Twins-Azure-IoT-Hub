@@ -35,8 +35,8 @@ async def create_client(cert_file, key_file, pass_phrase, device_id):
     )
     
     # Instantiate client. This will throw an error if the certificate data is incorrect
-    print("Send the public data of the {0} certificate to the Azure CA and the IoT Hub.".format(device_id))
-    print("The CA and the Hub client will verify the device's certificate and, if everything is correct, it will instantiate the client.")
+    print("Send the public data of the {0} certificate to the CA and the IoT Hub.".format(device_id))
+    print("The Azure CA and the IoT Hub client will very the device's certificate and, if everything is correct, it will instantiate the client.")
     device_client = IoTHubDeviceClient.create_from_x509_certificate(
         hostname=hostname, device_id=device_id, x509=x509
     )
@@ -107,16 +107,18 @@ async def main():
     print("IoT Hub - Simulating Device to Digital Twin Communication ...")
 
     clients = []
+    device_ids = []
     for certificate in CERTIFICATES:
         try:
             # The device that has been created on the portal using X509 CA signing or Self signing capabilities
             # The certificate file should be with the same name as the device
             device_id = os.path.basename(certificate["certFile"]).strip('-public.pem.pfx')
-            print("Connecting to device {} ...".format(device_id))
+            device_ids.append(device_id)
+            print("Connecting to device {0} ...".format(device_id))
             temp_client = await create_client(certificate["certFile"], certificate["keyFile"], certificate["pass"], device_id)
             clients.append(temp_client)
         except:
-            print("Warning: Could not find device for the following certificate {}".format(certificate))
+            print("Warning: Could not find device for the following certificate {0}".format(certificate))
             continue
 
     if (len(clients) != len(device_folders)):
@@ -136,11 +138,11 @@ async def main():
             for folder in device_folders:
                 temp_c, temp_f = read_sensors_data(folder)
                 if (temp_c != None):
-                    print("temperature(C): {}, temperature(F): {}".format(temp_c, temp_f))
+                    print("temperature(C): {0}, temperature(F): {1}".format(temp_c, temp_f))
                 
                     reported_patch = {"currentTemperatureC": temp_c, "currentTemperatureF": temp_f, "connectivity": "WiFi"}
-                    print("Send the {0} sensor data, the client will encrypt it and send it to the IoT Hub.".format(device_id))
-                    print("IoT Hub on its side will decrypt the data and update the reported properties of the Digital Twin of {0}".format(device_id))
+                    print("Send the {0} sensor data, the client will encrypt it and send it to the IoT Hub.".format(device_ids[client_index]))
+                    print("IoT Hub on its side will decrypt the data and update the reported properties of the Digital Twin of {0}".format(device_ids[client_index]))
                     await clients[client_index].patch_twin_reported_properties(reported_patch)
                     print("Send simple telemetry message to monitor what has been changed.")
                     await send_telemetry_message(clients[client_index], reported_patch)
